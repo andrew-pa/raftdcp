@@ -8,7 +8,7 @@ mod common;
 use common::*;
 
 #[derive(Clone)]
-struct RaftServer(Arc<RwLock<RaftState>>);
+struct RaftServer(Arc<RwLock<State>>);
 
 #[tarpc::server]
 impl RaftService for RaftServer {
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     let server_address = std::env::args().nth(1).expect("provide address to listen on")
         .parse::<std::net::SocketAddr>().unwrap();
     
-    let state = Arc::new(RwLock::new(RaftState::default()));
+    let state = Arc::new(RwLock::new(State::from_disk()));
 
     let mut listener = tarpc::serde_transport::tcp::listen(
         server_address, tokio_serde::formats::Json::default).await?;

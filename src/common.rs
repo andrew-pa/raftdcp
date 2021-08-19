@@ -1,5 +1,5 @@
+use anyhow::{Result, Context};
 use std::collections::HashMap;
-
 
 pub type Term = usize;
 
@@ -27,7 +27,7 @@ impl Default for ProtocolRole {
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct RaftState {
+pub struct State {
     current_term: Term,
     voted_for: Option<NodeId>,
     log: Vec<LogEntry>,
@@ -39,6 +39,26 @@ pub struct RaftState {
 
     #[serde(skip)]
     role: ProtocolRole
+}
+
+impl State {
+    /// read the persisted node state from disk
+    pub fn from_disk() -> Result<State> {
+        match std::fs::File::open("node-state.json") {
+            Ok(f) => serde_json::from_reader(f).context("deserialize node state from disk"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
+            Err(e) => Err(anyhow::anyhow!(e))
+        }
+    }
+
+    /// write the persisted node state to disk
+    /// if the write fails, panic
+    pub fn persist(&self) {
+        std::fs::File::create("node-state.json")
+            .map_err(Into::into)
+            .and_then(|f| serde_json::to_writer(f, self).context("serialize node state to disk"))
+            .expect("persist node state to disk")
+    }
 }
 
 #[tarpc::service]
