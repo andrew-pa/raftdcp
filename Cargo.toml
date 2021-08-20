@@ -15,6 +15,7 @@ tokio = { version = "1.1", features = [ "full" ] }
 tokio-serde = { version = "0.8", features = [ "json" ]}
 tokio-stream = { version = "0.1", features = [ "time", "net" ] }
 uuid = { version = "0.8", features = [ "serde", "v4" ] }
+rand = "0.8"
 
 [[bin]]
 name = "raft"

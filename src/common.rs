@@ -1,5 +1,6 @@
 use anyhow::{Result, Context};
 use std::{collections::HashMap, net::SocketAddr};
+use tokio::sync::RwLock;
 pub use uuid::Uuid;
 
 pub type Term = usize;
@@ -11,7 +12,7 @@ pub struct ClusterConfig {
     pub self_id: NodeId,
     pub addresses: HashMap<NodeId, SocketAddr>,
 
-    pub clients: HashMap<NodeId, RaftServiceClient>
+    clients: RwLock<HashMap<NodeId, RaftServiceClient>>
 }
 
 impl ClusterConfig {
@@ -20,12 +21,39 @@ impl ClusterConfig {
             = serde_json::from_reader(std::fs::File::open("cluster.json")?)?;
         let mut clients = HashMap::new();
         for (id, addr) in addrs.iter() {
-            let transport = tarpc::serde_transport::tcp::connect(addr, tokio_serde::formats::Json::default).await?;
-            clients.insert(*id, RaftServiceClient::new(tarpc::client::Config::default(), transport).spawn());
+            match tarpc::serde_transport::tcp::connect(addr, tokio_serde::formats::Json::default).await {
+                Ok(transport) => { clients.insert(*id, RaftServiceClient::new(tarpc::client::Config::default(), transport).spawn()); }
+                Err(e) => log::error!("tried to connect to {}@{} on startup but failed: {}", id, addr, e)
+            }
         }
         Ok(ClusterConfig {
-            self_id, addresses: addrs, clients
+            self_id, addresses: addrs, clients: RwLock::new(clients)
         })
+    }
+
+    pub async fn get_client(&self, id: &NodeId) -> Result<RaftServiceClient> {
+        let clients = self.clients.read().await;
+        if let Some(client) = clients.get(id) {
+            Ok(client.clone())
+        } else {
+            std::mem::drop(clients);
+            let mut clients = self.clients.write().await;
+            let addr = self.addresses.get(id).ok_or_else(|| anyhow::anyhow!("don't have address for node {}", id))?;
+            let mut retries = 0;
+            while retries < 5 {
+                match tarpc::serde_transport::tcp::connect(addr, tokio_serde::formats::Json::default).await {
+                    Ok(transport) => {
+                        let client = RaftServiceClient::new(tarpc::client::Config::default(), transport).spawn();
+                        clients.insert(*id, client.clone());
+                        return Ok(client);
+                    }
+                    Err(e) => log::error!("tried to connect to {}@{} on startup but failed, retrying (attempt {}): {}", id, addr, retries, e)
+                }
+                retries+=1;
+                tokio::time::sleep(std::time::Duration::from_millis(retries*2)).await;
+            }
+            Err(anyhow::anyhow!("could not connect to {}@{}, retries exhausted", id, addr))
+        }
     }
 }
 
@@ -49,7 +77,10 @@ impl Default for ProtocolRole {
     }
 }
 
-pub fn default_election_timeout() -> u16 { 50 }
+pub fn default_election_timeout() -> u16 {
+    use rand::Rng;
+    rand::thread_rng().gen_range(40..60)
+}
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct State {
@@ -100,10 +131,17 @@ impl State {
         self.election_ticks_before_timeout = default_election_timeout();
     }
 
-    pub fn follower_indices(&mut self) -> Option<&mut HashMap<NodeId, (usize, usize)>> {
-        match &mut self.role {
-            ProtocolRole::Leader { follower_indices } => Some(follower_indices),
+    pub fn clone_follower_indices(&self) -> Option<HashMap<NodeId, (usize, usize)>> {
+        match &self.role {
+            ProtocolRole::Leader { follower_indices } => Some(follower_indices.clone()),
             _ => None
+        }
+    }
+
+    pub fn set_follower_indices(&mut self, fi: HashMap<NodeId, (usize,usize)>) {
+        match &mut self.role {
+            ProtocolRole::Leader { follower_indices } => *follower_indices = fi,
+            _ => panic!()
         }
     }
 

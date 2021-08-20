@@ -25,6 +25,8 @@ impl RaftService for RaftServer {
     ) -> (Term, bool) {
         let state = self.0.read().await;
         state.persist();
+        log::trace!("append_entries(term: {}, leader_id: {}, prev_log_index: {}, prev_log_term: {}, entries: {:?}, leader_commit: {}",
+            term, leader_id, prev_log_index, prev_log_term, entries, leader_commit);
         if term < state.current_term {
             return (state.current_term, false);
         }
@@ -59,7 +61,7 @@ impl RaftService for RaftServer {
         }
         state.log.extend_from_slice(&entries[next_log_index-prev_log_index-1..]);
         if leader_commit > state.commit_index {
-            state.commit_index = leader_commit.min(/* index of the last new log entry ... from entries[], or from log[]?*/0);
+            state.commit_index = leader_commit.min(state.log.len()-1 /* last new entry index */);
         }
         (state.current_term, true)
     }
@@ -74,11 +76,19 @@ impl RaftService for RaftServer {
     ) -> (Term, bool) {
         let mut state = self.0.write().await;
         state.persist();
+        log::trace!("request_vote(term: {}, candidate_id: {}, last_log_index: {}, last_log_term: {})",
+            term, candidate_id, last_log_index, last_log_term);
         if term < state.current_term {
             return (state.current_term, false);
         }
         state.election_ticks_before_timeout = default_election_timeout();
-        let logs_match = todo!();
+        let logs_match = state.log.last().map_or(false, |e| {
+            if e.term == last_log_term { 
+                state.log.len()-1 > last_log_index
+            } else {
+                e.term > last_log_term
+            }
+        });
         if state.voted_for.map(|id| id == candidate_id).unwrap_or(true) && logs_match {
             state.current_term = term;
             (state.current_term, true)
@@ -98,11 +108,16 @@ async fn hold_election(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
         let state = state.read().await;
         (state.current_term, state.log.len(), state.log.last().map_or(0, |e| e.term))
     };
+    let self_id = cluster.self_id;
 
-    let mut futures: Vec<_> = cluster.clients.iter()
-        .map(|(id, cl)|
-            cl.request_vote(tarpc::context::current(), term, cluster.self_id, last_log_index, last_log_term)
-                .then(move |res| future::ready((id, res))).boxed())
+    let mut futures: Vec<_> = cluster.addresses.iter()
+        .map(|(id, _)| cluster.get_client(id).then(move |c| async move {
+            (id, match c {
+                Ok(cl) => cl.request_vote(tarpc::context::current(), term, self_id, last_log_index, last_log_term)
+                                .await.map_err(Into::into),
+                Err(e) => Err(e)
+            })
+        }).boxed())
         .collect();
     loop {
         let mut should_become_follower = None;
@@ -118,14 +133,18 @@ async fn hold_election(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
                 },
                 Err(e) => {
                     log::error!("requesting vote from node {} failed: {}, retrying", node_id, e);
-                    futures.push(cluster.clients[node_id].request_vote(
-                            tarpc::context::current(), term, cluster.self_id, last_log_index, last_log_term)
-                        .then(move |res| future::ready((node_id, res))).boxed());
+                    futures.push(cluster.get_client(node_id).then(move |c| async move {
+                        (node_id, match c {
+                            Ok(cl) => cl.request_vote(tarpc::context::current(), term, self_id, last_log_index, last_log_term)
+                                .await.map_err(Into::into),
+                            Err(e) => Err(e)
+                        })
+                    }).boxed());
                 }
             }
         }
         if votes_recieved >= cluster.addresses.len()/2 {
-            become_leader(state.clone(), cluster.clone());
+            become_leader(state.clone(), cluster.clone()).await;
             break;
         }
         {
@@ -156,10 +175,19 @@ async fn become_leader(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
 async fn leader_update(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
     log::trace!("leader update");
     let mut state = state.write().await;
-    for (id, (next_index, match_index)) in state.follower_indices().expect("leader update called on leader nodes").iter_mut() {
-        if state.log.len()-1 >= *next_index {
-            match cluster.clients[id].append_entries(tarpc::context::current(), state.current_term, cluster.self_id,
-                prev_log_index, prev_log_term, entries, state.commit_index).await 
+    let mut fi = state.clone_follower_indices().expect("leader update called on leader nodes");
+    for (id, (next_index, match_index)) in fi.iter_mut() {
+        //if state.log.len()-1 >= *next_index {
+            let entries: Vec<_> = state.log[*next_index..].into();
+            let prev_log_index = *next_index-1;
+            let prev_log_term = state.log.get(*next_index-1).map_or(0, |e| e.term);
+            match cluster.get_client(id).then(|c| async {
+                match c {
+                    Ok(cl) => cl.append_entries(tarpc::context::current(), state.current_term, cluster.self_id,
+                                prev_log_index, prev_log_term, entries, state.commit_index).await.map_err(Into::into),
+                    Err(e) => Err(e)
+                }
+            }).await
             {
                 Ok((term, success)) => {
                     if term > state.current_term {
@@ -169,6 +197,8 @@ async fn leader_update(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
                     }
                     if success {
                         // update indices
+                        *next_index = state.log.len();
+                        *match_index = state.log.len()-1;
                     } else {
                         *next_index -= 1;
                         // we'll get this node on the next update tick
@@ -178,14 +208,29 @@ async fn leader_update(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
                     log::error!("failed to send append entries RPC to {}: {}", id, e);
                 }
             }
-        }
+        //}
     }
+    let mut n = state.commit_index+1;
+    while n < state.log.len() {
+        if state.log[n].term == state.current_term {
+            let num_followers_match = fi.iter().fold(0,
+                |count, (_, (_, match_index))| if *match_index >= n { count+1 } else { count });
+            if num_followers_match >= cluster.addresses.len()/2 {
+                state.commit_index = n;
+                break;
+            }
+        }
+        n+=1;
+    }
+    state.set_follower_indices(fi);
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
     log::trace!("starting process");
+    // use rand::Rng;
+    // tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..100))).await;
 
     let self_id = std::env::args()
         .nth(1)
@@ -202,28 +247,28 @@ async fn main() -> Result<()> {
     let et_clu = cluster.clone();
     log::trace!("spawning tick stream");
     let tick_task = tokio::task::spawn(async move {
-        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_millis(35)))
+        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_millis(100)))
         .for_each(|t| {
             let et_state = et_state.clone();
             let et_clu = et_clu.clone();
             async move {
-                log::trace!("tick {:?}", t);
                 let mut state = et_state.write().await;
+                log::trace!("tick: state = {:?}", &state);
                 if state.commit_index < state.last_applied {
                     state.last_applied += 1;
                     apply_to_state_machine(&state.log[state.last_applied]);
                 }
                 match &mut state.role {
                     ProtocolRole::Follower => {
-                        state.election_ticks_before_timeout -= 1;
+                        state.election_ticks_before_timeout = state.election_ticks_before_timeout.saturating_sub(1);
                         if state.election_ticks_before_timeout == 0 {
                             state.start_election(et_clu.self_id);
                             state.role = ProtocolRole::Candidate(Some(tokio::task::spawn(hold_election(et_state.clone(), et_clu))));
                         }
                     },
                     ProtocolRole::Candidate(election_task) => {
-                        election_task.take().unwrap().abort();
-                        state.election_ticks_before_timeout -= 1;
+                        election_task.take().map(|t| t.abort());
+                        state.election_ticks_before_timeout = state.election_ticks_before_timeout.saturating_sub(1);
                         if state.election_ticks_before_timeout == 0 {
                             state.start_election(et_clu.self_id);
                             state.role = ProtocolRole::Candidate(Some(tokio::task::spawn(hold_election(et_state.clone(), et_clu))));
@@ -264,7 +309,11 @@ async fn main() -> Result<()> {
         .await;
 
     tick_task.abort();
-    tick_task.await;
+    match tick_task.await {
+        Ok(()) => {},
+        Err(e) if e.is_cancelled() => { },
+        Err(e) => return Err(anyhow::anyhow!(e))
+    }
 
     Ok(())
 }
