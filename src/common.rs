@@ -79,7 +79,7 @@ impl Default for ProtocolRole {
 
 pub fn default_election_timeout() -> u16 {
     use rand::Rng;
-    rand::thread_rng().gen_range(40..60)
+    rand::thread_rng().gen_range(10..30)
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]

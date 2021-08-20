@@ -82,13 +82,14 @@ impl RaftService for RaftServer {
             return (state.current_term, false);
         }
         state.election_ticks_before_timeout = default_election_timeout();
-        let logs_match = state.log.last().map_or(false, |e| {
+        let logs_match = state.log.last().map_or(true /*how do empty logs match?*/, |e| {
             if e.term == last_log_term { 
                 state.log.len()-1 > last_log_index
             } else {
                 e.term > last_log_term
             }
         });
+        log::trace!("logs_match = {}", logs_match);
         if state.voted_for.map(|id| id == candidate_id).unwrap_or(true) && logs_match {
             state.current_term = term;
             (state.current_term, true)
@@ -121,9 +122,11 @@ async fn hold_election(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
         .collect();
     loop {
         let mut should_become_follower = None;
+        log::trace!("requesting votes {}", futures.len());
         for (node_id, res) in future::join_all(std::mem::replace(&mut futures, Vec::new())).await {
             match res {
                 Ok((nterm, vote_granted)) => {
+                    log::trace!("got vote result: {}", vote_granted);
                     if nterm > term {
                         should_become_follower = Some(nterm);
                     }
@@ -143,9 +146,10 @@ async fn hold_election(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
                 }
             }
         }
+        log::trace!("recieved {} votes so far", votes_recieved);
         if votes_recieved >= cluster.addresses.len()/2 {
             become_leader(state.clone(), cluster.clone()).await;
-            break;
+            return;
         }
         {
             let mut state = state.write().await;
@@ -154,10 +158,12 @@ async fn hold_election(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
                 state.role = ProtocolRole::Follower;
             }
             if let ProtocolRole::Follower = state.role {
-                break;
+                return;
             }
         }
-        if futures.len() == 0 { break; }
+        if futures.len() == 0 {
+            break;
+        }
     }
 }
 
@@ -166,7 +172,7 @@ async fn become_leader(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
         let mut state = state.write().await;
         log::info!("becoming leader, term = {}", state.current_term);
         state.role = ProtocolRole::Leader {
-            follower_indices: cluster.addresses.iter().map(|(id, _)| (*id, (state.log.len(), 0usize))).collect()
+            follower_indices: cluster.addresses.iter().map(|(id, _)| (*id, (state.log.len()+1, 0usize))).collect()
         };
     }
     leader_update(state, cluster).await
@@ -197,8 +203,8 @@ async fn leader_update(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
                     }
                     if success {
                         // update indices
-                        *next_index = state.log.len();
-                        *match_index = state.log.len()-1;
+                        *next_index = state.log.len()+1;
+                        *match_index = state.log.len();
                     } else {
                         *next_index -= 1;
                         // we'll get this node on the next update tick
@@ -240,6 +246,9 @@ async fn main() -> Result<()> {
     log::trace!("connecting to cluster");
     let cluster = Arc::new(ClusterConfig::from_disk(self_id).await?);
 
+    log::debug!("{:?}", std::fs::create_dir(self_id.to_string()));
+    std::env::set_current_dir(self_id.to_string())?;
+
     log::trace!("loading persistent state");
     let state = Arc::new(RwLock::new(State::from_disk()?));
 
@@ -247,13 +256,14 @@ async fn main() -> Result<()> {
     let et_clu = cluster.clone();
     log::trace!("spawning tick stream");
     let tick_task = tokio::task::spawn(async move {
-        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_millis(100)))
+        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_millis(1000)))
         .for_each(|t| {
             let et_state = et_state.clone();
             let et_clu = et_clu.clone();
             async move {
                 let mut state = et_state.write().await;
-                log::trace!("tick: state = {:?}", &state);
+                log::trace!("tick {:?}: current term: {} voted_for: {:?} et: {}",
+                    state.role, state.current_term, state.voted_for, state.election_ticks_before_timeout);
                 if state.commit_index < state.last_applied {
                     state.last_applied += 1;
                     apply_to_state_machine(&state.log[state.last_applied]);
