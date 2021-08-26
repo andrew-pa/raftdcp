@@ -6,7 +6,6 @@ use tokio::sync::RwLock;
 
 mod common;
 use common::*;
-mod resetable_interval;
 
 #[derive(Clone)]
 struct RaftServer(Arc<RwLock<State>>, Arc<ClusterConfig>);
