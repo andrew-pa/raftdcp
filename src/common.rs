@@ -18,7 +18,10 @@ pub struct ClusterConfig {
 impl ClusterConfig {
     pub async fn from_disk(self_id: NodeId) -> Result<ClusterConfig> {
         let addrs: HashMap<NodeId, SocketAddr>
-            = serde_json::from_reader(std::fs::File::open("cluster.json")?)?;
+            = serde_json::from_reader(
+                std::fs::File::open("cluster.json")
+                    .context("open cluster config file")?
+                ).context("parse cluster config file")?;
         let mut clients = HashMap::new();
         for (id, addr) in addrs.iter() {
             match tarpc::serde_transport::tcp::connect(addr, tokio_serde::formats::Json::default).await {
@@ -55,11 +58,21 @@ impl ClusterConfig {
             Err(anyhow::anyhow!("could not connect to {}@{}, retries exhausted", id, addr))
         }
     }
+
+    pub async fn reset_client(&self, id: &NodeId) {
+        let mut clients = self.clients.write().await;
+        clients.remove(id);
+    }
 }
+
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LogItem(u32);
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LogEntry {
-    pub term: Term
+    pub term: Term,
+    pub item: LogItem
 }
 
 #[derive(Debug)]
@@ -82,7 +95,7 @@ pub fn default_election_timeout() -> u16 {
     rand::thread_rng().gen_range(10..30)
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct State {
     pub current_term: Term,
     pub voted_for: Option<NodeId>,
@@ -102,6 +115,21 @@ pub struct State {
 
     #[serde(skip)]
     pub last_leader_id: Option<NodeId>
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State {
+            current_term: 0,
+            voted_for: None,
+            log: Vec::new(),
+            commit_index: 0,
+            last_applied: 0,
+            role: ProtocolRole::default(),
+            election_ticks_before_timeout: default_election_timeout(),
+            last_leader_id: None
+        }
+    }
 }
 
 impl State {
@@ -145,31 +173,19 @@ impl State {
         }
     }
 
-    /*pub async fn hold_election(&mut self, cluster: &ClusterConfig) {
-        use futures::stream::*;
-        self.election_ticks_before_timeout = default_election_timeout();
-        self.current_term += 1;
-        self.voted_for = Some(cluster.self_id);
-        let mut votes = 0;
-        let mut futures: futures::stream::FuturesUnordered<_> =
-            cluster.clients.iter().map(|(_, cl)| async move {
-                cl.request_vote(tarpc::context::current(), self.current_term,
-                    cluster.self_id, self.log.len(), self.log.last().map(|e| e.term).unwrap_or(0))
-            }).collect();
-        /*{
-            match res {
-                Ok((term, vote_granted)) => {
-                    if term > self.current_term {
-                        self.current_term = term;
-                        self.role = ProtocolRole::Follower;
-                        return;
-                    }
-                    if vote_granted { votes += 1; }
-                },
-                Err(e) => log::error!("error recieving vote from node: {}", e)
-            }
-        }*/
-    }*/
+    /* Indices in Raft start at 1! */
+    pub fn log_entry(&self, index: usize) -> Option<&LogEntry> {
+        if index == 0 { return None; }
+        self.log.get(index - 1)
+    }
+
+    pub fn last_log_index(&self) -> usize {
+        self.log.len()
+    }
+
+    pub fn last_log_term(&self) -> Option<Term> {
+        self.log.last().map(|e| e.term)
+    }
 }
 
 #[tarpc::service]
@@ -180,5 +196,6 @@ pub trait RaftService {
 
     async fn request_vote(term: Term, candidate_id: NodeId,
         last_log_index: usize, last_log_term: Term) -> (Term, bool);
-}
 
+    async fn append_log_entry(item: LogItem);
+}
