@@ -24,7 +24,7 @@ impl RaftService for RaftServer {
     ) -> (Term, bool) {
         let state = self.0.read().await;
         state.persist();
-        log::trace!("append_entries(term: {}, leader_id: {}, prev_log_index: {}, prev_log_term: {}, entries: {:?}, leader_commit: {}",
+        log::trace!("recv: append_entries(term: {}, leader_id: {}, prev_log_index: {}, prev_log_term: {}, entries: {:?}, leader_commit: {}",
             term, leader_id, prev_log_index, prev_log_term, entries, leader_commit);
         if term < state.current_term {
             log::info!("rejecting append_entries because sender's term is before the current term");
@@ -65,6 +65,7 @@ impl RaftService for RaftServer {
                 state.log.truncate(next_log_index);
             }
         }
+        log::trace!("adding new entries to log: {:?}", &entries[next_log_index-prev_log_index-1..]);
         state.log.extend_from_slice(&entries[next_log_index-prev_log_index-1..]);
         if leader_commit > state.commit_index {
             state.commit_index = leader_commit.min(state.log.len()-1 /* last new entry index */);
@@ -82,7 +83,7 @@ impl RaftService for RaftServer {
     ) -> (Term, bool) {
         let mut state = self.0.write().await;
         state.persist();
-        log::trace!("request_vote(term: {}, candidate_id: {}, last_log_index: {}, last_log_term: {})",
+        log::trace!("recv: request_vote(term: {}, candidate_id: {}, last_log_index: {}, last_log_term: {})",
             term, candidate_id, last_log_index, last_log_term);
         if term < state.current_term {
             return (state.current_term, false);

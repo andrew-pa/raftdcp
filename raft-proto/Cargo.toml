@@ -1,11 +1,10 @@
 [package]
-name = "raft-server"
+name = "raft-proto"
 version = "0.1.0"
 edition = "2018"
 
 [dependencies]
 log = "0.4"
-env_logger = "0.9"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -16,4 +15,4 @@ tokio-serde = { version = "0.8", features = [ "json" ]}
 tokio-stream = { version = "0.1", features = [ "time", "net" ] }
 uuid = { version = "0.8", features = [ "serde", "v4" ] }
 rand = "0.8"
-raft-proto = { path = "../raft-proto" }
+
