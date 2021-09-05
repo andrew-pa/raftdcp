@@ -32,9 +32,11 @@ async fn main() {
                 })
             }).boxed())).await;
 
+        let term_size = terminal.size().unwrap();
+
         terminal.draw(|f| {
             let chunks = Layout::default()
-                .direction(Direction::Vertical)
+                .direction(if term_size.width > term_size.height { Direction::Horizontal } else { Direction::Vertical })
                 .constraints(states.iter().map(|_| Constraint::Ratio(1, states.len() as u32)).collect::<Vec<_>>())
                 .split(f.size());
             // dbg!(&chunks);
@@ -43,10 +45,9 @@ async fn main() {
                 if report.is_err() {
                     report_style = report_style.fg(Color::Red);
                 }
-                let widget = Paragraph::new(Spans::from(vec![
-                        Span::styled(cluster.addresses[id].to_string(), Style::default().add_modifier(Modifier::ITALIC)),
-                        Span::styled(format!("\n{:#?}", report), report_style)
-                ]))
+                let mut txt = Text::from(format!("Network address: {}", cluster.addresses[id]));
+                txt.extend(Text::styled(format!("{:#?}", report), report_style));
+                let widget = Paragraph::new(txt)
                     .block(Block::default()
                         .borders(Borders::ALL)
                         .title(id.to_string()))

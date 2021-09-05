@@ -66,6 +66,7 @@ impl RaftService for RaftServer {
             }
         }
         log::trace!("adding new entries to log: {:?}", &entries[next_log_index-prev_log_index-1..]);
+        log::trace!("log already had: {:?}", state.log);
         state.log.extend_from_slice(&entries[next_log_index-prev_log_index-1..]);
         if leader_commit > state.commit_index {
             state.commit_index = leader_commit.min(state.log.len()-1 /* last new entry index */);
@@ -131,6 +132,7 @@ impl RaftService for RaftServer {
             voted_for: state.voted_for,
             last_log_index: state.last_log_index(),
             last_log_term: state.last_log_term(),
+            log: state.log.clone(),
 
             commit_index: state.commit_index,
             last_applied: state.last_applied,
@@ -233,21 +235,25 @@ async fn become_leader(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
                 .map(|(id, _)| (*id, (state.last_log_index() + 1, 0usize))).collect()
         };
     }
-    leader_update(state, cluster).await
+    leader_update(state, cluster, true).await
 }
 
-async fn leader_update(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
+async fn leader_update(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>, first_update: bool) {
     log::trace!("leader update");
     let mut state = state.write().await;
     let mut fi = state.clone_follower_indices().expect("leader update called on leader nodes");
     for (id, (next_index, match_index)) in fi.iter_mut() {
-        //if state.log.len()-1 >= *next_index {
+        //if first_update || state.last_log_index() >= *next_index {
             let entries: Vec<_> = state.log[(*next_index - 1)..].into();
             let prev_log_index = *next_index-1;
-            let prev_log_term = state.log_entry(*next_index).map_or(0, |e| e.term);
-            log::trace!("sending append entries to {} [next: {}, match: {}]: entries: {:?}, prev_log_index: {}, prev_log_term: {}, commit_index: {}",
-                id, next_index, match_index, &entries,
-                prev_log_index, prev_log_term, state.commit_index);
+            let prev_log_term = state.log_entry(prev_log_index).map_or(0, |e| e.term);
+            if entries.len() == 0 {
+                log::trace!("sending heartbeat to {} [n: {}, m: {}]", id, next_index, match_index);
+            } else {
+                log::trace!("sending append entries to {} [next: {}, match: {}]: entries: {:?}, prev_log_index: {}, prev_log_term: {}, commit_index: {}",
+                    id, next_index, match_index, &entries,
+                    prev_log_index, prev_log_term, state.commit_index);
+            }
             match cluster.get_client(id).then(|c| async {
                 match c {
                     Ok(cl) => cl.append_entries(tarpc::context::current(), state.current_term, cluster.self_id,
@@ -328,8 +334,8 @@ async fn main() -> Result<()> {
             let et_clu = et_clu.clone();
             async move {
                 let mut state = et_state.write().await;
-                log::trace!("tick {:?}: current term: {} voted_for: {:?} et: {}",
-                    state.role, state.current_term, state.voted_for, state.election_ticks_before_timeout);
+                // log::trace!("tick {:?}: current term: {} voted_for: {:?} et: {}",
+                //     state.role, state.current_term, state.voted_for, state.election_ticks_before_timeout);
                 if state.commit_index < state.last_applied {
                     state.last_applied += 1;
                     apply_to_state_machine(&state.log[state.last_applied]);
@@ -350,7 +356,7 @@ async fn main() -> Result<()> {
                             state.role = ProtocolRole::Candidate(Some(tokio::task::spawn(hold_election(et_state.clone(), et_clu))));
                         }
                     }
-                    ProtocolRole::Leader { .. } => { std::mem::drop(state); leader_update(et_state.clone(), et_clu).await }
+                    ProtocolRole::Leader { .. } => { std::mem::drop(state); leader_update(et_state.clone(), et_clu, false).await }
                 }
             }
         }).await

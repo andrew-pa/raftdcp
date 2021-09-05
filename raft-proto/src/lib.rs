@@ -20,6 +20,7 @@ pub struct ServerDebugReport {
     pub voted_for: Option<NodeId>,
     pub last_log_index: usize,
     pub last_log_term : Option<Term>,
+    pub log: Vec<LogEntry>,
 
     pub commit_index: usize,
     pub last_applied: usize,
