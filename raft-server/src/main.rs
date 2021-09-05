@@ -123,6 +123,34 @@ impl RaftService for RaftServer {
             }
         }
     }
+
+    async fn debug_report(self, _cx: RpcContext) -> ServerDebugReport {
+        let state = self.0.read().await;
+        ServerDebugReport {
+            current_term: state.current_term,
+            voted_for: state.voted_for,
+            last_log_index: state.last_log_index(),
+            last_log_term: state.last_log_term(),
+
+            commit_index: state.commit_index,
+            last_applied: state.last_applied,
+
+            role: (match state.role {
+                ProtocolRole::Follower => "Follower",
+                ProtocolRole::Leader {..} => "Leader",
+                ProtocolRole::Candidate(_) => "Candidate"
+            }).to_string(),
+
+            election_ticks_before_timeout: state.election_ticks_before_timeout,
+
+            last_leader_id: state.last_leader_id
+        }
+    }
+
+    async fn shutdown(self, _cx: RpcContext) {
+        log::warn!("shutting down");
+        std::process::exit(0);
+    }
 }
 
 fn apply_to_state_machine(e: &LogEntry) {
