@@ -59,10 +59,10 @@ pub struct ClusterConfig {
 }
 
 impl ClusterConfig {
-    pub async fn from_disk(self_id: NodeId) -> anyhow::Result<ClusterConfig> {
+    pub async fn from_disk(path: impl AsRef<std::path::Path>, self_id: NodeId) -> anyhow::Result<ClusterConfig> {
         let addrs: HashMap<NodeId, SocketAddr>
             = serde_json::from_reader(
-                std::fs::File::open("cluster.json")
+                std::fs::File::open(path)
                     .context("open cluster config file")?
                 ).context("parse cluster config file")?;
         let mut clients = HashMap::new();

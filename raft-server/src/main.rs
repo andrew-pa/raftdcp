@@ -160,6 +160,8 @@ fn apply_to_state_machine(e: &LogEntry) {
 }
 
 async fn hold_election(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>) {
+    // TODO: if you kill the current leader, right now the remaining servers just reject each
+    // other's election vote requests
     let mut votes_recieved = 1;
     let (term, last_log_index, last_log_term) = {
         let state = state.read().await;
@@ -315,8 +317,11 @@ async fn main() -> Result<()> {
         .expect("node id")
         .parse::<Uuid>()
         .unwrap();
-    log::trace!("connecting to cluster, self_id = {}", self_id);
-    let cluster = Arc::new(ClusterConfig::from_disk(self_id).await?);
+    let config_path = std::env::args()
+        .nth(2)
+        .unwrap_or("./cluster.json".into());
+    log::info!("connecting to cluster, self_id = {} from config at: {}", self_id, config_path);
+    let cluster = Arc::new(ClusterConfig::from_disk(config_path, self_id).await?);
 
     log::debug!("creating directory for persistent state: {:?}", std::fs::create_dir(self_id.to_string()));
     std::env::set_current_dir(self_id.to_string())?;

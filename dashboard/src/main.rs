@@ -16,7 +16,10 @@ use raft_proto::*;
 
 #[tokio::main]
 async fn main() {
-    let cluster = ClusterConfig::from_disk(Uuid::new_v4()).await.unwrap();
+    let config_path = std::env::args()
+        .nth(1)
+        .unwrap_or("./cluster.json".into());
+    let cluster = ClusterConfig::from_disk(config_path, Uuid::new_v4()).await.unwrap();
 
     let stdout = std::io::stdout().into_raw_mode().unwrap();
     let backend = TermionBackend::new(stdout);
@@ -33,6 +36,10 @@ async fn main() {
             }).boxed())).await;
 
         let term_size = terminal.size().unwrap();
+
+        for (id, _) in states.iter().filter(|(_, r)| r.is_err()) {
+            cluster.reset_client(id).await;
+        }
 
         terminal.draw(|f| {
             let chunks = Layout::default()
