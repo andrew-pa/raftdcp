@@ -305,18 +305,37 @@ async fn leader_update(state: Arc<RwLock<State>>, cluster: Arc<ClusterConfig>, f
     state.set_follower_indices(fi);
 }
 
+use std::io::Write;
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
-    log::trace!("starting process");
-    // use rand::Rng;
-    // tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..100))).await;
-
     let self_id = std::env::args()
         .nth(1)
         .expect("node id")
         .parse::<Uuid>()
         .unwrap();
+
+    env_logger::builder()
+        .format(move |buf, record| {
+            use log::Level;
+            writeln!(buf, "[\x1b[{}m{}\x1b[0m {} ({})] {}",
+                match record.level() {
+                    Level::Error => "31",
+                    Level::Warn => "33",
+                    Level::Info => "32",
+                    Level::Trace => "36",
+                    Level::Debug => "34"
+                },
+                record.level(),
+                self_id,
+                record.module_path().unwrap_or(record.target()),
+                record.args())
+        })
+    .init();
+    log::trace!("starting process");
+    // use rand::Rng;
+    // tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..100))).await;
+
     let config_path = std::env::args()
         .nth(2)
         .unwrap_or("./cluster.json".into());
@@ -333,7 +352,7 @@ async fn main() -> Result<()> {
     let et_clu = cluster.clone();
     log::trace!("spawning tick stream");
     let tick_task = tokio::task::spawn(async move {
-        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_millis(1000)))
+        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_millis(100)))
         .for_each(|_| {
             let et_state = et_state.clone();
             let et_clu = et_clu.clone();

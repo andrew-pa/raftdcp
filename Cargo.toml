@@ -1,4 +1,4 @@
 [workspace]
 members = [
-    "raft-server", "raft-proto", "test-client", "dashboard"
+    "raft-server", "raft-proto", "test-client", "dashboard", "cluster-tests"
 ]
