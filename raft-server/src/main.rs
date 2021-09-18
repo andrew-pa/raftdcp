@@ -65,8 +65,8 @@ impl RaftService for RaftServer {
                 state.log.truncate(next_log_index);
             }
         }
-        log::trace!("adding new entries to log: {:?}", &entries[next_log_index-prev_log_index-1..]);
-        log::trace!("log already had: {:?}", state.log);
+        // log::trace!("adding new entries to log: {:?}", &entries[next_log_index-prev_log_index-1..]);
+        // log::trace!("log already had: {:?}", state.log);
         state.log.extend_from_slice(&entries[next_log_index-prev_log_index-1..]);
         if leader_commit > state.commit_index {
             state.commit_index = leader_commit.min(state.log.len()-1 /* last new entry index */);

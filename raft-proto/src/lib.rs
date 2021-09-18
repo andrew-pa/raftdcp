@@ -93,7 +93,7 @@ impl ClusterConfig {
                         clients.insert(*id, client.clone());
                         return Ok(client);
                     }
-                    Err(e) => log::error!("tried to connect to {}@{} on startup but failed, retrying (attempt {}): {}", id, addr, retries, e)
+                    Err(e) => log::error!("tried to connect to {}@{} but failed, retrying (attempt {}): {}", id, addr, retries, e)
                 }
                 retries+=1;
                 tokio::time::sleep(std::time::Duration::from_millis(retries*2)).await;
