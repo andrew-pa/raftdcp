@@ -1,5 +1,6 @@
 use anyhow::Result;
 use futures::prelude::*;
+use rand::{Rng, thread_rng};
 use std::{sync::Arc, time::Duration};
 use tarpc::{context::Context as RpcContext, server::Channel};
 use tokio::sync::RwLock;
@@ -34,7 +35,7 @@ impl RaftService for RaftServer {
         // be brand new and so there is nothing to match
         if state.log_entry(prev_log_index)
             .map(|e| e.term != prev_log_term)
-            .unwrap_or(prev_log_index != 0)
+            .unwrap_or(false)
         {
             log::info!("rejecting append_entries because sender's log does not match terms (prev_log_index = {} [{:?} != {}])",
                 prev_log_index, state.log_entry(prev_log_index), prev_log_term);
@@ -334,7 +335,7 @@ async fn main() -> Result<()> {
     .init();
     log::trace!("starting process");
     // use rand::Rng;
-    // tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..100))).await;
+    tokio::time::sleep(Duration::from_millis(thread_rng().gen_range(0..100))).await;
 
     let config_path = std::env::args()
         .nth(2)

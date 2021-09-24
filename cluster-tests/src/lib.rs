@@ -21,7 +21,7 @@ mod tests {
             .current_dir("/tmp")
             .arg(id.to_string())
             .arg(config_path.to_str().unwrap())
-            .env("RUST_LOG", "raft=debug")
+            .env("RUST_LOG", "raft=trace")
             .spawn()
             .context("spawn node process")
     }
@@ -63,6 +63,7 @@ mod tests {
             let mut proc = self.children.remove(node).ok_or(anyhow::anyhow!("node process not found"))?;
             proc.kill().await.context("kill node process")?;
             self.children.insert(*node, make_node_proc(node, &self.config_path)?);
+            self.cfg.reset_client(node).await;
             Ok(())
         }
 
@@ -257,6 +258,7 @@ mod tests {
             let (follower_id, _) = state.iter().find(|(_, rep)|
                     rep.as_ref().map_or(false, |rep| rep.role == "Follower"))
                 .expect("there is at least one active follower node");
+            println!("crashing {}", follower_id);
             clu.crash_and_restart(follower_id).await.expect("crash & restart follower node");
         }
 
